@@ -4,7 +4,6 @@ import com.gomin_jungdok.gdgoc.post.dto.PostWriteRequestDto;
 import com.gomin_jungdok.gdgoc.post.dto.PostListDetailResponseDto;
 import com.gomin_jungdok.gdgoc.post.dto.PostDetailResponseDto;
 import com.gomin_jungdok.gdgoc.post.dto.PostListResponseDto;
-import com.gomin_jungdok.gdgoc.post.dto.PostWriteRequestDto;
 import com.gomin_jungdok.gdgoc.post.post_image.PostImage;
 import com.gomin_jungdok.gdgoc.post.post_image.PostImageService;
 import com.gomin_jungdok.gdgoc.post.post_image.PostImageRepository;
@@ -20,19 +19,14 @@ import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
-import org.springframework.data.repository.query.Param;
-import org.springframework.data.jpa.repository.Query;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.server.ResponseStatusException;
 import org.springframework.transaction.annotation.Transactional;
-import org.springframework.web.multipart.MultipartFile;
 
 import java.io.IOException;
 import java.util.List;
-import lombok.RequiredArgsConstructor;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.stream.Collectors;
@@ -41,8 +35,6 @@ import java.time.Instant;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.time.ZoneId;
-import java.util.List;
-import java.util.stream.Collectors;
 
 @Slf4j
 @Service
@@ -63,6 +55,7 @@ public class PostService {
         post.setUserId(1L);
         post.setTitle(requestDto.getTitle());
         post.setDescription(requestDto.getDescription());
+        post.setPostCategory(PostCategory.fromValue(requestDto.getCategory()));
 
         post = postRepository.save(post);
 
@@ -73,6 +66,7 @@ public class PostService {
         postImageService.uploadPostImages(requestDto.getImages(), post);
     }
 
+    // 고민 글 상세보기
     public PostDetailResponseDto getPostDetail(Long postId) {
         Post post = postRepository.findById(postId)
                 .orElseThrow(() -> new ResponseStatusException(HttpStatus.NOT_FOUND, "존재하지 않는 게시글"));
@@ -104,6 +98,7 @@ public class PostService {
                 isVoted,
                 isMine,
                 post.isAI(),
+                post.getPostCategory().getValue(),
                 writer.getProfileImage(),
                 writer.getNickname(),
                 formattedDate,
@@ -119,9 +114,21 @@ public class PostService {
         );
     }
 
-    public PostListResponseDto getPosts(int size, Long lastId) {
+    // 고민 글 조회
+    public PostListResponseDto getPosts(int size, Long lastId, List<String> category) {
         Pageable pageable = PageRequest.of(0, size);
-        List<Post> posts = postRepository.findPostsAfterId(lastId, pageable);
+
+        // 카테고리가 있는 경우 해당 카테고리로 필터링한 게시글 조회
+        List<Post> posts;
+        if (category != null && !category.isEmpty()) {
+            List<PostCategory> formattingCategory = category.stream()
+                    .map(PostCategory::fromValue)
+                    .toList();
+
+            posts = postRepository.findPostsByCategoryAfterId(formattingCategory, lastId, pageable);
+        } else {
+            posts = postRepository.findPostsAfterId(lastId, pageable);
+        }
 
         //TODO 로그인 구현 후 token에서 userId 추출해서 currentUserId에 사용하도록 수정해야함
         Long currentUserId = 1L;
@@ -141,6 +148,7 @@ public class PostService {
                     isVoted,
                     isMine,
                     isAi,
+                    post.getPostCategory().getValue(),
                     post.getTitle(),
                     (String) voteResult.get("option1Content"),
                     (String) voteResult.get("option2Content"),
@@ -155,25 +163,7 @@ public class PostService {
     }
 
     //오늘의 고민 게시글 3개 조회
-    @Transactional
     public List<TodayPostsDTO> getTodayPost() {
-        /*ZoneId koreaZone = ZoneId.of("Asia/Seoul");
-        ZoneId utcZone = ZoneId.of("UTC");
-
-        //현재 시간을 UTC 기준으로 변환
-        LocalDate yesterdayInKorea = Instant.now().atZone(koreaZone).toLocalDate().minusDays(1);
-
-        //어제 00:00:00 ~ 23:59:59을 UTC 기준으로 변환
-        LocalDateTime startTime = yesterdayInKorea.atStartOfDay(koreaZone)
-                .withZoneSameInstant(utcZone).toLocalDateTime();
-        LocalDateTime endTime = startTime.plusDays(1).minusSeconds(1);
-
-        System.out.println("UTC 기준 StartTime: " + startTime);
-        System.out.println("UTC 기준 EndTime: " + endTime);
-
-        System.out.println("StartTime (KST 기준): " + startTime.atZone(ZoneId.of("UTC")).withZoneSameInstant(ZoneId.of("Asia/Seoul")));
-        System.out.println("EndTime (KST 기준): " + endTime.atZone(ZoneId.of("UTC")).withZoneSameInstant(ZoneId.of("Asia/Seoul")));
-        */
         ZoneId koreaZone = ZoneId.of("Asia/Seoul");
         ZoneId utcZone = ZoneId.of("UTC");
 
@@ -183,23 +173,16 @@ public class PostService {
         LocalDate yesterdayInKorea = todayInKorea.minusDays(1);
 
         //어제 23:59:00 (KST) → UTC 변환
-        LocalDateTime startTime = yesterdayInKorea.atTime(23, 59)
-                .atZone(koreaZone)
-                .withZoneSameInstant(utcZone)
-                .toLocalDateTime();
+        LocalDateTime startTime = yesterdayInKorea.atTime(23, 59).atZone(koreaZone).withZoneSameInstant(utcZone).toLocalDateTime();
 
         //오늘 19:00:00 (KST) → UTC 변환
-        LocalDateTime endTime = todayInKorea.atTime(19, 0)
-                .atZone(koreaZone)
-                .withZoneSameInstant(utcZone)
-                .toLocalDateTime();
+        LocalDateTime endTime = todayInKorea.atTime(19, 0).atZone(koreaZone).withZoneSameInstant(utcZone).toLocalDateTime();
 
         System.out.println("UTC 기준 StartTime: " + startTime);
         System.out.println("UTC 기준 EndTime: " + endTime);
 
         System.out.println("StartTime (KST 기준): " + startTime.atZone(utcZone).withZoneSameInstant(koreaZone));
         System.out.println("EndTime (KST 기준): " + endTime.atZone(utcZone).withZoneSameInstant(koreaZone));
-
 
         List<Object[]> topVotedPosts = voteRepository.findTodayPosts(startTime, endTime);
 
@@ -215,16 +198,18 @@ public class PostService {
             System.out.println("업데이트할 게시글이 없습니다.");
         }
 
-        // 댓글 개수 조회
+        //댓글 개수 조회
         List<Object[]> commentCounts = commentRepository.countCommentsByPostIds(todayPosts);
         Map<Long, Long> commentCountMap = commentCounts.stream()
                 .collect(Collectors.toMap(obj -> (Long) obj[0], obj -> (Long) obj[1]));
 
+
         return topVotedPosts.stream()
                 .map(obj -> {
                     long postId = (long) obj[0];
-                    long voteCount = (long) obj[1];
-                    long commentCount = commentCountMap.getOrDefault(postId, 0L); // 댓글 개수 적용
+                    long totalVoteCount = (long) obj[1];
+                    long commentCount = commentCountMap.getOrDefault(postId, 0L); //댓글 개수 적용
+
 
                     Post post = postRepository.findById(postId)
                             .orElseThrow(() -> new IllegalArgumentException("게시글을 찾을 수 없습니다: " + postId));
@@ -249,7 +234,7 @@ public class PostService {
                             .map(option -> {
                                 long votes = voteCountMap.getOrDefault(option.getText(), 0L);
                                 long percentage = totalVotes == 0 ? 0 : Math.round(((double) votes / totalVotes) * 100);
-                                return new VoteResultDTO(option.getText(), percentage);
+                                return new VoteResultDTO(option.getText(), votes, percentage);
                             })
                             .collect(Collectors.toList());
 
@@ -257,14 +242,14 @@ public class PostService {
                             post.getId(),
                             post.getTitle(),
                             post.getDescription(),
+                            post.getPostCategory().getValue(),
                             voteResults,
-                            voteCount,
+                            totalVoteCount,
                             commentCount
                     );
                 })
                 .collect(Collectors.toList());
     }
-
 
     //오늘의 고민 상세 조회
     public PostDetailDTO getPostDetail(long post_id) {
@@ -280,20 +265,6 @@ public class PostService {
         // 댓글 개수 조회
         Long commentCount = commentRepository.countCommentsByPostId(post_id);
 
-        // 투표 결과 조회
-        /*List<Object[]> voteData = voteRepository.findVoteResults(post_id);
-        long totalVotes = voteData.stream()
-                .mapToLong(v -> v[1] instanceof Number ? ((Number) v[1]).longValue() : 0)
-                .sum(); // 총 투표 수 계산
-
-        List<VoteResultDTO> voteResults = voteData.stream()
-                .map(v -> {
-                    String name = (v[0] instanceof VoteOption) ? ((VoteOption) v[0]).getText() : "Unknown"; // 안전한 변환
-                    long votes = v[1] instanceof Number ? ((Number) v[1]).longValue() : 0; // 숫자 변환 처리
-                    long percentage = totalVotes == 0 ? 0 : Math.round(((double) votes / totalVotes) * 100);
-                    return new VoteResultDTO(name, percentage);
-                })
-                .collect(Collectors.toList());*/
         //해당 게시글의 모든 옵션 가져오기
         List<VoteOption> allOptions = voteOptionRepository.findByPostId(post_id);
 
@@ -314,7 +285,7 @@ public class PostService {
                 .map(option -> {
                     long votes = voteCountMap.getOrDefault(option.getText(), 0L);
                     long percentage = totalVotes == 0 ? 0 : Math.round(((double) votes / totalVotes) * 100);
-                    return new VoteResultDTO(option.getText(), percentage);
+                    return new VoteResultDTO(option.getText(), votes, percentage);
                 })
                 .collect(Collectors.toList());
 
@@ -334,8 +305,10 @@ public class PostService {
                 post.getId(),
                 post.getTitle(),
                 post.getDescription(),
+                post.getPostCategory().getValue(),
                 imageUrls,
                 voteResults,
+                totalVotes,
                 commentCount
                 //comments
         );
